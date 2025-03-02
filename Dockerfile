@@ -9,7 +9,9 @@ COPY poetry.lock pyproject.toml ./
 
 RUN pip install poetry
 RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-ansi
+    && poetry install --no-interaction --no-ansi \
+
+RUN poetry add prometheus_client
 
 
 COPY . .

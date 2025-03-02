@@ -1,11 +1,6 @@
 global:
   scrape_interval: 15s
 
-storage:
-  tsdb:
-    retention: 15d # Хранить данные 15 дней
-    retention_size: 10GB # Хранить не более 10GB данных
-
 scrape_configs:
   - job_name: 'cadvisor'
     static_configs:

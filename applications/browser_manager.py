@@ -10,6 +10,10 @@ class BrowserManager:
         self.page: Page | None = None
         self._is_closed = False
 
+    async def get_domain(self, url: str) -> str:
+        parsed_url = urlparse(url)
+        return parsed_url.netloc
+
     async def start(self, playwright: Playwright) -> None:
         self.browser = await playwright.chromium.launch(headless=self.headless)
         self.context = await self.browser.new_context()
@@ -50,12 +54,11 @@ class BrowserManager:
         if not self.context:
             return
 
-        parsed_url = urlparse(url)
         cookies = [
             {
                 "name": "CookieConsent",
                 "value": "true",
-                "domain": parsed_url.netloc,
+                "domain": await self.get_domain(url),
                 "path": "/"
             }
         ]

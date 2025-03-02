@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import time
 from typing import Tuple, Any
 from playwright.async_api import async_playwright
 from ..browser_manager import BrowserManager
@@ -26,22 +27,27 @@ class LanguageScraper:
         self.page = page
         self.lang_to_url = {}
 
-    async def collect_languages(self):
+    async def collect_languages(self, max_wait_time=150) -> Tuple[dict[str, str], int]:
         try:
             if self.page.is_closed():
-                return {}
+                return {}, 0
 
             active_lang_element = self.page.locator('[data-testid="langsblock"] [data-active="true"]')
             active_lang = await active_lang_element.get_attribute("aria-label")
 
             self.lang_to_url[active_lang] = self.page.url
 
-            while True:
-                if self.page.is_closed():
+            available_langs = await self.page.locator('[data-testid="langsblock"] *[data-active="false"]').all()
+            expected_count = len(available_langs) + 1
+
+            start_time = time.time()
+
+            while len(self.lang_to_url) < expected_count:
+                if time.time() - start_time > max_wait_time:
+                    print(f"TIMEOUT ERROR. {max_wait_time} seconds have passed")
                     break
 
-                available_langs = await self.page.locator('[data-testid="langsblock"] *[data-active="false"]').all()
-                if not available_langs:
+                if self.page.is_closed():
                     break
 
                 for lang_element in available_langs:
@@ -58,10 +64,10 @@ class LanguageScraper:
                 else:
                     break
 
-            return self.lang_to_url
+            return self.lang_to_url, expected_count
         except Exception as e:
-            print(f"Error in collect_languages: {e}")
-            return self.lang_to_url
+            print(f"Ошибка в collect_languages: {e}")
+            return self.lang_to_url, 0
 
 
 async def check_redis_connection():
@@ -74,8 +80,7 @@ async def check_redis_connection():
         return False
 
 
-async def scrape_single_url(url: str, semaphore: asyncio.Semaphore) -> Tuple[
-    str, dict[Any, Any] | str | dict[str, str]]:
+async def scrape_single_url(url: str, semaphore: asyncio.Semaphore) -> Tuple[str, dict[Any, Any] | str | dict[str, str]]:
     redis_available = await check_redis_connection()
 
     if redis_available:
@@ -98,27 +103,32 @@ async def scrape_single_url(url: str, semaphore: asyncio.Semaphore) -> Tuple[
 
                 if browser_manager.page and not browser_manager.page.is_closed():
                     scraper = LanguageScraper(browser_manager.page)
-                    result = await scraper.collect_languages()
+                    result, expected_count = await scraper.collect_languages()
 
                     if result:
                         print(f"Got results for {url}")
-                        if redis_available:
-                            try:
-                                async with redis_client.pipeline(transaction=True) as pipe:
-                                    await pipe.hset('cache', url, json.dumps(result))
-                                    await pipe.lpush('cache_keys', url)
 
-                                    cache_size = await redis_client.llen('cache_keys')
-                                    if cache_size > MAX_CACHE_SIZE:
-                                        oldest_url = await redis_client.rpop('cache_keys')
-                                        if oldest_url:
-                                            await redis_client.hdel('cache', oldest_url)
-                                            print(f"Removed oldest cache entry: {oldest_url}")
+                        if len(result) == expected_count:
+                            if redis_available:
+                                try:
+                                    async with redis_client.pipeline(transaction=True) as pipe:
+                                        await pipe.hset('cache', url, json.dumps(result))
+                                        await pipe.lpush('cache_keys', url)
 
-                                    await pipe.execute()
-                                print(f"Saved to cache: {url}")
-                            except Exception as e:
-                                print(f"Error saving to cache: {e}")
+                                        cache_size = await redis_client.llen('cache_keys')
+                                        if cache_size > MAX_CACHE_SIZE:
+                                            oldest_url = await redis_client.rpop('cache_keys')
+                                            if oldest_url:
+                                                await redis_client.hdel('cache', oldest_url)
+                                                print(f"Removed oldest cache entry: {oldest_url}")
+
+                                        await pipe.execute()
+                                    print(f"Saved to cache: {url}")
+                                except Exception as e:
+                                    print(f"Error saving to cache: {e}")
+                        else:
+                            print(f"Not all languages were collected ({len(result)} of {expected_count}), skipping cache")
+
                     else:
                         print(f"No results found for {url}")
                     return url, result
