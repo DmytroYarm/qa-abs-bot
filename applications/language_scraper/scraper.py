@@ -41,6 +41,7 @@ class LanguageScraper:
             expected_count = len(available_langs) + 1
 
             start_time = time.time()
+            click_attempts = 0
 
             while len(self.lang_to_url) < expected_count:
                 if time.time() - start_time > max_wait_time:
@@ -50,16 +51,41 @@ class LanguageScraper:
                 if self.page.is_closed():
                     break
 
-                for lang_element in available_langs:
-                    await asyncio.sleep(0.7)
-                    if self.page.is_closed():
-                        break
+                if available_langs:
+                    for lang_element in available_langs:
+                        await asyncio.sleep(0.7)
+                        if self.page.is_closed():
+                            break
 
-                    lang = await lang_element.get_attribute("aria-label")
-                    if lang and lang not in self.lang_to_url:
-                        await lang_element.click()
-                        await self.page.wait_for_selector(f'[data-active="true"][aria-label="{lang}"]', timeout=45000)
-                        self.lang_to_url[lang] = self.page.url
+                        lang = await lang_element.get_attribute("aria-label")
+                        if lang and lang not in self.lang_to_url:
+                            try:
+                                click_attempts += 1
+                                url_before = self.page.url
+                                await lang_element.click()
+                                try:
+                                    # Same-domain SPA: wait for active selector
+                                    await self.page.wait_for_selector(f'[data-active="true"][aria-label="{lang}"]',
+                                                                      timeout=8000)
+                                    self.lang_to_url[lang] = self.page.url
+                                except Exception:
+                                    # Cross-domain: navigation to another site
+                                    await self.page.wait_for_load_state('domcontentloaded', timeout=8000)
+                                    if self.page.url != url_before:
+                                        self.lang_to_url[lang] = self.page.url
+                                        await self.page.go_back(wait_until='domcontentloaded', timeout=10000)
+                                    else:
+                                        raise Exception(f"Click had no effect for lang={lang}")
+                                available_langs = await self.page.locator(
+                                    '[data-testid="langsblock"] *[data-active="false"]').all()
+                                expected_count = len(available_langs) + 1
+                                click_attempts = 0
+                                break
+                            except Exception as e:
+                                print(f"Ошибка клика: {e}")
+                                if click_attempts > 5:
+                                    break
+                    else:
                         break
                 else:
                     break
@@ -108,33 +134,33 @@ async def scrape_single_url(url: str, semaphore: asyncio.Semaphore) -> Tuple[str
                     if result:
                         print(f"Got results for {url}")
 
-                        if len(result) == expected_count:
-                            if redis_available:
-                                try:
-                                    async with redis_client.pipeline(transaction=True) as pipe:
-                                        await pipe.hset('cache', url, json.dumps(result))
-                                        await pipe.lpush('cache_keys', url)
+                        if redis_available:
+                            try:
+                                async with redis_client.pipeline(transaction=True) as pipe:
+                                    await pipe.hset('cache', url, json.dumps(result))
+                                    await pipe.lpush('cache_keys', url)
 
-                                        cache_size = await redis_client.llen('cache_keys')
-                                        if cache_size > MAX_CACHE_SIZE:
-                                            oldest_url = await redis_client.rpop('cache_keys')
-                                            if oldest_url:
-                                                await redis_client.hdel('cache', oldest_url)
-                                                print(f"Removed oldest cache entry: {oldest_url}")
+                                    cache_size = await redis_client.llen('cache_keys')
+                                    if cache_size > MAX_CACHE_SIZE:
+                                        oldest_url = await redis_client.rpop('cache_keys')
+                                        if oldest_url:
+                                            await redis_client.hdel('cache', oldest_url)
+                                            print(f"Removed oldest cache entry: {oldest_url}")
 
-                                        await pipe.execute()
+                                    await pipe.execute()
+                                if len(result) < expected_count:
+                                    print(f"Partial result cached ({len(result)} of {expected_count}): {url}")
+                                else:
                                     print(f"Saved to cache: {url}")
-                                except Exception as e:
-                                    print(f"Error saving to cache: {e}")
-                        else:
-                            print(f"Not all languages were collected ({len(result)} of {expected_count}), skipping cache")
+                            except Exception as e:
+                                print(f"Error saving to cache: {e}")
 
                     else:
                         print(f"No results found for {url}")
                     return url, result
                 else:
                     print(f"Browser page is closed for {url}")
-                    return url, {}
+                    return url, {"error": f"Browser page is closed for {url}"}
     except Exception as e:
         print(f"Error processing {url}: {e}")
         return url, {}

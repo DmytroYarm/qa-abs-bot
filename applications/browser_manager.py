@@ -3,8 +3,9 @@ from playwright.async_api import Playwright, Browser, BrowserContext, Page
 
 
 class BrowserManager:
-    def __init__(self, headless: bool = True) -> None:
+    def __init__(self, headless: bool = True, channel: str | None = None) -> None:
         self.headless = headless
+        self.channel = channel
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
@@ -15,10 +16,32 @@ class BrowserManager:
         return parsed_url.netloc
 
     async def start(self, playwright: Playwright) -> None:
-        self.browser = await playwright.chromium.launch(headless=self.headless)
-        self.context = await self.browser.new_context()
+        launch_kwargs = dict(
+            headless=self.headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+        if self.channel:
+            launch_kwargs["channel"] = self.channel
+        self.browser = await playwright.chromium.launch(**launch_kwargs)
+        self.context = await self.browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/133.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            viewport={"width": 1280, "height": 800},
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        )
+        # Hide webdriver flag from JS
+        await self.context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
         self.page = await self.context.new_page()
-        # await self.add_base_cookies()
         self._is_closed = False
 
     async def close(self) -> None:

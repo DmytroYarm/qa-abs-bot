@@ -4,7 +4,11 @@ class KeyboardManager:
     @staticmethod
     def get_main_keyboard() -> ReplyKeyboardMarkup:
         keyboard = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="🔗Link Scrapper")]],
+            keyboard=[
+                [KeyboardButton(text="🔗Link Scrapper")],
+                [KeyboardButton(text="🌍Cross-Project Scrapper")],
+                [KeyboardButton(text="🗑️Clear Cache")],
+            ],
             resize_keyboard=True
         )
         return keyboard

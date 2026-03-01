@@ -6,7 +6,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from states.bot_states import BotStates
 from keyboards.keyboard_manager import KeyboardManager
-from applications.language_scraper.scraper import scrape_languages
+from applications.language_scraper.scraper import scrape_languages, redis_client
+from applications.cross_project_scraper import scrape_cross_project
 
 
 logging.basicConfig(level=logging.INFO)
@@ -22,8 +23,12 @@ class MessageHandler:
     def setup_handlers(self):
         self.router.message.register(self.cmd_start, Command("start"))
         self.router.message.register(self.go_to_menu, lambda message: message.text == "🔗Link Scrapper", StateFilter(BotStates.main_menu))
+        self.router.message.register(self.go_to_cross_project, lambda message: message.text == "🌍Cross-Project Scrapper", StateFilter(BotStates.main_menu))
+        self.router.message.register(self.clear_cache, lambda message: message.text == "🗑️Clear Cache", StateFilter(BotStates.main_menu))
         self.router.message.register(self.back_to_main, lambda message: message.text == "🔙BACK", StateFilter(BotStates.secondary_menu))
+        self.router.message.register(self.back_to_main, lambda message: message.text == "🔙BACK", StateFilter(BotStates.cross_project_menu))
         self.router.message.register(self.handle_message, StateFilter(BotStates.secondary_menu))
+        self.router.message.register(self.handle_cross_project, StateFilter(BotStates.cross_project_menu))
 
     async def cmd_start(self, message: Message, state: FSMContext):
         await state.set_state(BotStates.main_menu)
@@ -90,3 +95,54 @@ class MessageHandler:
                     await processing_msg.delete()
                 except Exception as e:
                     logger.error(f"Failed to delete processing_msg message: {e}", exc_info=True)
+
+    async def clear_cache(self, message: Message):
+        try:
+            await redis_client.delete('cache', 'cache_keys')
+            await message.answer("✅ Cache cleared successfully", reply_markup=KeyboardManager.get_main_keyboard())
+        except Exception as e:
+            logger.error(f"Failed to clear cache: {e}", exc_info=True)
+            await message.answer(f"❌ Failed to clear cache: {e}", reply_markup=KeyboardManager.get_main_keyboard())
+
+    async def go_to_cross_project(self, message: Message, state: FSMContext):
+        await state.set_state(BotStates.cross_project_menu)
+        await message.answer(
+            "🌍Insert exist.ua link to find all languages across projects:",
+            reply_markup=KeyboardManager.get_back_keyboard()
+        )
+
+    async def handle_cross_project(self, message: Message):
+        processing_msg = await message.answer("Searching across projects, please wait...⏳")
+        try:
+            url = message.text.strip()
+            result = await scrape_cross_project(url)
+
+            lines = []
+            for project, langs in result.items():
+                if project == 'error':
+                    lines.append(f"Error: {langs}")
+                    continue
+                lines.append(f"<b>── {project} ──</b>")
+                if isinstance(langs, dict):
+                    for lang, link in langs.items():
+                        lines.append(f"<b>{lang}:</b>\n{link}")
+                else:
+                    lines.append(str(langs))
+                lines.append("")
+
+            result_text = "\n".join(lines) if lines else "No results found"
+            await message.answer(
+                result_text,
+                reply_markup=KeyboardManager.get_back_keyboard(),
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Cross-project scraping error: {e}", exc_info=True)
+            await message.answer(str(e), reply_markup=KeyboardManager.get_back_keyboard())
+        finally:
+            if processing_msg:
+                try:
+                    await processing_msg.delete()
+                except Exception as e:
+                    logger.error(f"Failed to delete processing_msg: {e}", exc_info=True)
